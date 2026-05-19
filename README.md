@@ -16,3 +16,8 @@ MAPE: 평균 절대 백분율 오차<br>
 R²: 결정계수<br>
 허용 오차 정확도: ±5% / ±10% / ±20% 이내 비율<br>
 (나중에 변경할 예정)
+
+## 사전 테스트 결과
+<img width="960" height="960" alt="Image" src="https://github.com/user-attachments/assets/85fa9f71-1741-42cc-a540-2811f12c8856" />
+<img width="1440" height="600" alt="Image" src="https://github.com/user-attachments/assets/7afd19d3-46e1-4004-8219-8aad0afbe13b" />
+<img width="1200" height="600" alt="Image" src="https://github.com/user-attachments/assets/7978f1f2-dff7-47f3-b856-31bee085c0a5" />
