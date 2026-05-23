@@ -1,5 +1,6 @@
 import os
 import warnings
+from datetime import datetime
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -53,13 +54,18 @@ DATA_PATH = "preprocessed_apt_trade_final.csv"  # 연도별 CSV가 들어있는 
 TEST_SIZE  = 0.2   # 전체 대비 테스트 비율
 VALID_SIZE = 0.25  # 나머지(train+valid) 대비 valid 비율 → 전체의 20%
 
+# SHAP 설정
+COMPUTE_SHAP      = True  # False로 바꾸면 SHAP 계산 건너뜀
+SHAP_N_BACKGROUND = 100   # KernelExplainer background 샘플 수 (클수록 정확하지만 느림)
+SHAP_N_EXPLAIN    = 200   # SHAP 값을 계산할 테스트 샘플 수
+
 #TODO: 만약 예측할 대상이 바뀌면 컬럼도 같이 변경
 TARGET_COL = "price_manwon"
 
 # 제거할 ID성/누수성 컬럼
 #TODO: 전처리된 데이터에서 삭제 필요하면 적기
 DROP_COLS = [
-    "ID", "year_month", "log_price_manwon" , "pice_manwon"
+    "ID", "id", "year_month", "log_price_manwon" , "pice_manwon"
 ]
 
 
@@ -398,7 +404,7 @@ def train(model, train_loader, valid_loader, optimizer, criterion):
 #            dict history           -> 학습 epoch별 loss 기록
 #            int  best_epoch        -> best valid_loss 달성 epoch
 # 반환값   : 없음
-def evaluate_and_save(model, test_loader, df, idx_test, y_test, y_mean, y_std, history, best_epoch):
+def evaluate_and_save(model, test_loader, df, idx_test, y_test, y_mean, y_std, history, best_epoch, out_dir):
     # 예측
     model.eval()
     test_preds_s = []
@@ -463,8 +469,9 @@ def evaluate_and_save(model, test_loader, df, idx_test, y_test, y_mean, y_std, h
     plt.title("FT-Transformer Training Curve")
     plt.legend()
     plt.tight_layout()
-    plt.savefig("ft_transformer_loss_curve.png", dpi=120)
-    print("\n[INFO] 학습 곡선 저장: ft_transformer_loss_curve.png")
+    plt.savefig(os.path.join(out_dir, "ft_transformer_loss_curve.png"), dpi=120)
+    plt.close()
+    print(f"\n[INFO] 학습 곡선 저장: {out_dir}/ft_transformer_loss_curve.png")
 
     plt.figure(figsize=(8, 8))
     plt.scatter(y_test, y_pred, alpha=0.3, s=10)
@@ -475,8 +482,9 @@ def evaluate_and_save(model, test_loader, df, idx_test, y_test, y_mean, y_std, h
     plt.title(f"FT-Transformer 예측 결과 (R² = {r2:.4f})")
     plt.legend()
     plt.tight_layout()
-    plt.savefig("ft_transformer_prediction_scatter.png", dpi=120)
-    print("[INFO] 예측 산점도 저장: ft_transformer_prediction_scatter.png")
+    plt.savefig(os.path.join(out_dir, "ft_transformer_prediction_scatter.png"), dpi=120)
+    plt.close()
+    print(f"[INFO] 예측 산점도 저장: {out_dir}/ft_transformer_prediction_scatter.png")
 
     # 실제값 기준 정렬 후 예측값 비교 그래프
     sort_idx = np.argsort(y_test)
@@ -495,8 +503,9 @@ def evaluate_and_save(model, test_loader, df, idx_test, y_test, y_mean, y_std, h
     plt.title("FT-Transformer Prediction vs Actual (Sorted)")
     plt.legend()
     plt.tight_layout()
-    plt.savefig("ft_transformer_sorted_prediction.png", dpi=120)
-    print("[INFO] 정렬 비교 그래프 저장: ft_transformer_sorted_prediction.png")
+    plt.savefig(os.path.join(out_dir, "ft_transformer_sorted_prediction.png"), dpi=120)
+    plt.close()
+    print(f"[INFO] 정렬 비교 그래프 저장: {out_dir}/ft_transformer_sorted_prediction.png")
 
     # CSV 저장
     results_df = df.iloc[idx_test].copy().reset_index(drop=True)
@@ -506,11 +515,11 @@ def evaluate_and_save(model, test_loader, df, idx_test, y_test, y_mean, y_std, h
     results_df["오차율(%)"] = ((y_test - y_pred) / y_test * 100).round(4)
     results_df["절대오차율(%)"] = abs_pct_error.round(4)
 
-    results_df.to_csv("ft_transformer_predictions.csv", index=False, encoding="utf-8-sig")
+    results_df.to_csv(os.path.join(out_dir, "ft_transformer_predictions.csv"), index=False, encoding="utf-8-sig")
     results_df.sort_values("절대오차율(%)", ascending=False).to_csv(
-        "ft_transformer_predictions_by_error.csv", index=False, encoding="utf-8-sig"
+        os.path.join(out_dir, "ft_transformer_predictions_by_error.csv"), index=False, encoding="utf-8-sig"
     )
-    print(f"\n[INFO] 예측 결과 저장: ft_transformer_predictions.csv / ft_transformer_predictions_by_error.csv")
+    print(f"\n[INFO] 예측 결과 저장: {out_dir}/ft_transformer_predictions.csv / ft_transformer_predictions_by_error.csv")
     print(f"       총 {len(results_df):,}개 예측 결과 저장")
 
     # 모델 저장
@@ -518,8 +527,93 @@ def evaluate_and_save(model, test_loader, df, idx_test, y_test, y_mean, y_std, h
         "model_state_dict": model.state_dict(),
         "best_epoch": best_epoch,
         "test_metrics": {"rmse": rmse, "mae": mae, "mape": mape, "r2": r2},
-    }, "ft_transformer_apartment_model.pt")
-    print("\n[INFO] 학습된 모델 저장: ft_transformer_apartment_model.pt")
+    }, os.path.join(out_dir, "ft_transformer_apartment_model.pt"))
+    print(f"\n[INFO] 학습된 모델 저장: {out_dir}/ft_transformer_apartment_model.pt")
+
+
+# 함수 이름 : compute_shap_importance()
+# 기능     : KernelExplainer로 SHAP 값을 계산하고, summary plot / bar plot을 PNG로 저장하며
+#            feature별 평균 |SHAP| 값을 CSV로 저장한다.
+#            수치형/범주형 feature를 하나의 배열로 합쳐 model-agnostic 방식으로 계산한다.
+# 파라미터 : FTTransformer model       -> 학습이 완료된 모델
+#            np.ndarray X_num_train    -> 학습 수치형 feature (background 샘플 풀)
+#            np.ndarray X_cat_train    -> 학습 범주형 feature (background 샘플 풀)
+#            np.ndarray X_num_test     -> 테스트 수치형 feature
+#            np.ndarray X_cat_test     -> 테스트 범주형 feature
+#            list numeric_cols         -> 수치형 컬럼명 리스트
+#            list categorical_cols     -> 범주형 컬럼명 리스트
+# 반환값   : pd.DataFrame -> feature별 mean_abs_shap 값이 담긴 importance 테이블
+def compute_shap_importance(model, X_num_train, X_cat_train,
+                             X_num_test, X_cat_test,
+                             numeric_cols, categorical_cols, out_dir):
+    try:
+        import shap
+    except ImportError:
+        print("[SHAP] shap 패키지가 없습니다. pip install shap 후 재실행하세요.")
+        return None
+
+    print("\n[SHAP] Feature importance 계산 시작...")
+    print(f"[SHAP] background={SHAP_N_BACKGROUND}개, explain={SHAP_N_EXPLAIN}개 샘플 사용")
+
+    model.eval()
+    feature_names = list(numeric_cols) + list(categorical_cols)
+    n_num = len(numeric_cols)
+
+    # 수치형 + 범주형을 하나의 float 배열로 합침
+    X_train_combined = np.hstack([X_num_train, X_cat_train.astype(np.float32)])
+    X_test_combined  = np.hstack([X_num_test,  X_cat_test.astype(np.float32)])
+
+    # background: 학습 데이터에서 균등 샘플링
+    bg_size = min(SHAP_N_BACKGROUND, len(X_train_combined))
+    bg_idx  = np.random.choice(len(X_train_combined), bg_size, replace=False)
+    background = X_train_combined[bg_idx]
+
+    # 설명 대상: 테스트 데이터 앞부분
+    explain_data = X_test_combined[:min(SHAP_N_EXPLAIN, len(X_test_combined))]
+
+    def predict_fn(X: np.ndarray) -> np.ndarray:
+        x_num = torch.from_numpy(X[:, :n_num].astype(np.float32)).to(DEVICE)
+        # SHAP이 float로 변환한 범주형 값을 다시 int로 복원
+        x_cat = torch.from_numpy(np.round(X[:, n_num:]).astype(np.int64)).to(DEVICE)
+        with torch.no_grad():
+            return model(x_num, x_cat).squeeze(-1).cpu().numpy()
+
+    explainer   = shap.KernelExplainer(predict_fn, background)
+    shap_values = explainer.shap_values(explain_data, nsamples=100)
+
+    # 이전에 열려 있는 figure가 있으면 모두 닫기
+    plt.close('all')
+
+    # Summary plot (bee-swarm)
+    shap.summary_plot(shap_values, explain_data, feature_names=feature_names, show=False)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "ft_transformer_shap_summary.png"), dpi=120, bbox_inches="tight")
+    plt.close()
+    print(f"[SHAP] Summary plot 저장: {out_dir}/ft_transformer_shap_summary.png")
+
+    # Bar plot (mean |SHAP|)
+    shap.summary_plot(shap_values, explain_data, feature_names=feature_names,
+                      plot_type="bar", show=False)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "ft_transformer_shap_importance.png"), dpi=120, bbox_inches="tight")
+    plt.close()
+    print(f"[SHAP] Importance bar plot 저장: {out_dir}/ft_transformer_shap_importance.png")
+
+    # 수치 테이블 출력 및 CSV 저장
+    mean_abs_shap = np.abs(shap_values).mean(axis=0)
+    importance_df = pd.DataFrame({
+        "feature":       feature_names,
+        "mean_abs_shap": mean_abs_shap,
+    }).sort_values("mean_abs_shap", ascending=False).reset_index(drop=True)
+
+    print("\n[SHAP] Feature Importance (상위 20개)")
+    print("=" * 50)
+    print(importance_df.head(20).to_string(index=False))
+
+    importance_df.to_csv(os.path.join(out_dir, "ft_transformer_shap_importance.csv"), index=False, encoding="utf-8-sig")
+    print(f"[SHAP] Importance CSV 저장: {out_dir}/ft_transformer_shap_importance.csv")
+
+    return importance_df
 
 
 # 함수 이름 : main()
@@ -531,6 +625,12 @@ def evaluate_and_save(model, test_loader, df, idx_test, y_test, y_mean, y_std, h
 def main():
     set_korean_font()
     set_seed(SEED)
+
+    run_ts  = datetime.now().strftime("%Y%m%d_%H%M")
+    out_dir = os.path.join("Result", run_ts)
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"[INFO] 결과 저장 폴더: {out_dir}")
+
     print(f"[INFO] Using device: {DEVICE}")
     print(f"[INFO] PyTorch version: {torch.__version__}")
 
@@ -567,7 +667,16 @@ def main():
 
     history, best_epoch = train(model, train_loader, valid_loader, optimizer, criterion)
 
-    evaluate_and_save(model, test_loader, df, idx_test, y_test, y_mean, y_std, history, best_epoch)
+    evaluate_and_save(model, test_loader, df, idx_test, y_test, y_mean, y_std, history, best_epoch, out_dir)
+
+    if COMPUTE_SHAP:
+        compute_shap_importance(
+            model,
+            X_num_train, X_cat_train,
+            X_num_test,  X_cat_test,
+            numeric_cols, categorical_cols,
+            out_dir,
+        )
 
     print("\nFT-Transformer 학습 및 평가 완료!")
 
