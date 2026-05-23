@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, QuantileTransformer
 from sklearn.metrics import (
     mean_squared_error,
@@ -48,23 +47,19 @@ USE_LOG_TARGET = True
 
 #데이터 경로 및 컬럼 설정
 #TODO: 입력 데이터명이나 경로가 바뀌면 해당 경로로 수정
-DATA_PATH = "seoul"  # 연도별 CSV가 들어있는 폴더 경로
+DATA_PATH = "preprocessed_apt_trade_final.csv"  # 연도별 CSV가 들어있는 폴더 경로
 
-# 시간 기반 분할 연도 설정 (train: TRAIN_YEARS, valid: VALID_YEAR, test: TEST_YEAR)
-TRAIN_YEARS = [2024]
-VALID_YEAR  = 2025
-TEST_YEAR   = 2026
+# 랜덤 분할 비율 설정
+TEST_SIZE  = 0.2   # 전체 대비 테스트 비율
+VALID_SIZE = 0.25  # 나머지(train+valid) 대비 valid 비율 → 전체의 20%
 
 #TODO: 만약 예측할 대상이 바뀌면 컬럼도 같이 변경
-TARGET_COL = "물건금액(만원)"
+TARGET_COL = "price_manwon"
 
 # 제거할 ID성/누수성 컬럼
-#TODO: 전처리된 데이터 받아서 쓰면 제거
+#TODO: 전처리된 데이터에서 삭제 필요하면 적기
 DROP_COLS = [
-    "건물명",
-    "본번", "부번",
-    "취소일",
-    "신고한 개업공인중개사 시군구명",
+    "ID", "year_month", "log_price_manwon" , "pice_manwon"
 ]
 
 
@@ -95,7 +90,7 @@ def set_seed(seed: int) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-
+"""
 # 함수 이름 : load_and_preprocess()
 # 기능     : 폴더 내 연도별 CSV 파일을 모두 로드하여 합친 후, 취소 거래 제거, 아파트 필터링,
 #            이상치 제거, 불필요 컬럼 삭제, 날짜 컬럼 분해, 코드성 컬럼 범주형 변환을 수행한다.
@@ -154,7 +149,7 @@ def load_and_preprocess(folder: str) -> pd.DataFrame:
             df[col] = df[col].astype("Int64").astype(str)
 
     return df
-
+"""
 
 # 함수 이름 : encode_features()
 # 기능     : 수치형/범주형 컬럼을 자동 분류하고, 결측치 처리 및 LabelEncoder 인코딩을 수행한다.
@@ -198,26 +193,32 @@ def encode_features(df: pd.DataFrame):
 
 
 # 함수 이름 : split_and_scale()
-# 기능     : 계약년 기준으로 데이터를 train/valid/test로 분할하고, 수치형 변수에
+# 기능     : 시간 순서대로 데이터를 train/valid/test로 분할하고, 수치형 변수에
 #            QuantileTransformer를 적용하며, 타겟값에 로그 변환 및 표준화를 수행한다.
-#            분할 기준: TRAIN_YEARS → train, VALID_YEAR → valid, TEST_YEAR → test
+#            데이터가 year_month 기준으로 정렬되어 있어야 하며, 미래 데이터 누수를 방지한다.
+#            분할 비율: TEST_SIZE(test), VALID_SIZE(train_temp 대비 valid)
 # 파라미터 : np.ndarray X_numeric    -> 수치형 feature 배열 (float32)
 #            np.ndarray X_categorical -> 범주형 feature 배열 (int64)
 #            np.ndarray y             -> 타겟값 배열 (float32)
-#            np.ndarray year_array    -> 각 샘플의 계약년도 배열
 # 반환값   : tuple -> 분할/변환된 X_num, X_cat (train/valid/test),
 #                     표준화된 y_train_s, y_valid_s, 원본 y_test,
 #                     타겟 복원용 y_mean, y_std, 테스트 인덱스 idx_test
-def split_and_scale(X_numeric, X_categorical, y, year_array):
-    idx_train = np.where(np.isin(year_array, TRAIN_YEARS))[0]
-    idx_valid = np.where(year_array == VALID_YEAR)[0]
-    idx_test  = np.where(year_array == TEST_YEAR)[0]
+def split_and_scale(X_numeric, X_categorical, y):
+    n = len(y)
+    n_test     = int(n * TEST_SIZE)
+    n_trainval = n - n_test
+    n_valid    = int(n_trainval * VALID_SIZE)
+    n_train    = n_trainval - n_valid
+
+    idx_train = np.arange(0, n_train)
+    idx_valid = np.arange(n_train, n_train + n_valid)
+    idx_test  = np.arange(n_train + n_valid, n)
 
     X_num_train, X_num_valid, X_num_test = X_numeric[idx_train], X_numeric[idx_valid], X_numeric[idx_test]
     X_cat_train, X_cat_valid, X_cat_test = X_categorical[idx_train], X_categorical[idx_valid], X_categorical[idx_test]
     y_train, y_valid, y_test = y[idx_train], y[idx_valid], y[idx_test]
 
-    print(f"\n[INFO] Train: {len(idx_train)}, Valid: {len(idx_valid)}, Test: {len(idx_test)}")
+    print(f"\n[INFO] 시간순 분할 — Train: {len(idx_train)}, Valid: {len(idx_valid)}, Test: {len(idx_test)}")
 
     qt = QuantileTransformer(
         output_distribution="normal",
@@ -533,18 +534,28 @@ def main():
     print(f"[INFO] Using device: {DEVICE}")
     print(f"[INFO] PyTorch version: {torch.__version__}")
 
-    df = load_and_preprocess(DATA_PATH) #TODO: 전처리 함수 날리면 df = pd.read_csv(DATA_PATH, encoding="utf-8-sig") 이걸로 교체하기
+    df = pd.read_csv(DATA_PATH, encoding="utf-8-sig") #TODO: 전처리 함수 날리면 df = pd.read_csv(DATA_PATH, encoding="utf-8-sig") 이걸로 교체하기
+
+    # 시간순 정렬 (미래 데이터 누수 방지 — split_and_scale이 순차 분할을 가정)
+    if "year_month" in df.columns:
+        df = df.sort_values("year_month").reset_index(drop=True)
+        print(f"[INFO] year_month 범위: {df['year_month'].min()} ~ {df['year_month'].max()}")
+
+    # 불필요 컬럼 제거
+    for col in DROP_COLS:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+
     df, numeric_cols, categorical_cols, cat_cardinalities = encode_features(df)
 
     X_numeric     = df[numeric_cols].values.astype(np.float32)
     X_categorical = df[categorical_cols].values.astype(np.int64)
     y             = df[TARGET_COL].values.astype(np.float32)
-    year_array    = df["계약년"].values.astype(int)
 
     (X_num_train, X_num_valid, X_num_test,
      X_cat_train, X_cat_valid, X_cat_test,
      y_train_s, y_valid_s, y_test,
-     y_mean, y_std, idx_test) = split_and_scale(X_numeric, X_categorical, y, year_array)
+     y_mean, y_std, idx_test) = split_and_scale(X_numeric, X_categorical, y)
 
     train_loader, valid_loader, test_loader = build_dataloaders(
         X_num_train, X_num_valid, X_num_test,
